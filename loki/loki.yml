@@ -1,0 +1,67 @@
+# Loki 3.7 single-binary configuration backed by RustFS (S3-compatible) object
+# storage for chunks and the shipped TSDB index (local verification).
+# auth disabled so the push/query API work without an X-Scope-OrgID header,
+# matching Mimir's multitenancy_enabled: false.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  # Chunks and the shipped TSDB index live in the RustFS S3-compatible bucket.
+  # s3forcepathstyle: true is required for MinIO-style servers (bucket in the
+  # path, not the host); insecure: true = plain HTTP (no TLS).
+  storage:
+    s3:
+      endpoint: rustfs:9000
+      region: us-east-1
+      bucketnames: loki-data
+      access_key_id: nethealthadmin
+      secret_access_key: nethealthsecretkey
+      s3forcepathstyle: true
+      insecure: true
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: s3
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  # Node-local scratch only: the shipper's working copy of the index and its
+  # read-through cache. The authoritative index and chunks are in S3 (above).
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+
+# Retain log streams for 31 days. retention_period lives under limits_config;
+# actual deletion is performed by the compactor with retention_enabled: true.
+limits_config:
+  retention_period: 744h
+  # State-change events are stamped at "now", but tolerate clock jumps in the
+  # Docker Desktop / WSL2 VM by not rejecting slightly old/unordered lines.
+  reject_old_samples: false
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  # Store delete requests in the object store too, so nothing depends on the
+  # local filesystem backend anymore.
+  delete_request_store: s3
+  compaction_interval: 10m
+
+# Disable phone-home analytics for a self-contained local stack.
+analytics:
+  reporting_enabled: false

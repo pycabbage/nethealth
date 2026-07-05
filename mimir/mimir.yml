@@ -1,0 +1,76 @@
+# Mimir 3.1.2 monolithic / single-process configuration (local verification)
+# multitenancy disabled so push/query work without X-Scope-OrgID header.
+multitenancy_enabled: false
+
+server:
+  http_listen_port: 9009
+  grpc_listen_port: 9095
+  log_level: info
+
+# Shared object-storage connection used by blocks/ruler/alertmanager. Points at
+# the RustFS S3-compatible service. `insecure: true` = plain HTTP (no TLS).
+# Per-component bucket names are set on each *_storage block below, because
+# Mimir requires a distinct bucket per component.
+common:
+  storage:
+    backend: s3
+    s3:
+      endpoint: rustfs:9000
+      region: us-east-1
+      access_key_id: nethealthadmin
+      secret_access_key: nethealthsecretkey
+      insecure: true
+
+blocks_storage:
+  s3:
+    bucket_name: mimir-blocks
+  # These stay on the local volume: the ingester's TSDB head/WAL and the
+  # store-gateway's block-sync cache are node-local, not object storage.
+  bucket_store:
+    sync_dir: /data/tsdb-sync
+  tsdb:
+    dir: /data/tsdb
+
+compactor:
+  data_dir: /data/compactor
+  sharding_ring:
+    kvstore:
+      store: memberlist
+
+distributor:
+  ring:
+    kvstore:
+      store: memberlist
+
+ingester:
+  ring:
+    replication_factor: 1
+    kvstore:
+      store: memberlist
+
+store_gateway:
+  sharding_ring:
+    replication_factor: 1
+    kvstore:
+      store: memberlist
+
+ruler_storage:
+  s3:
+    bucket_name: mimir-ruler
+
+# Single-node: no external members to join.
+memberlist:
+  join_members: []
+
+# Relax limits for local testing.
+limits:
+  ingestion_rate: 100000
+  ingestion_burst_size: 200000
+  # Tolerate slightly out-of-order samples. The Docker Desktop / WSL2 VM wall
+  # clock can jump backwards, which would otherwise make concurrent pushes race
+  # ahead of an already-ingested timestamp and be rejected as out-of-order.
+  out_of_order_time_window: 10m
+  # Retain compacted blocks for 31 days. Maps to the CLI flag
+  # -compactor.blocks-retention-period (verified via `mimir -help-all`), which
+  # in YAML lives under the per-tenant `limits` block.
+  compactor_blocks_retention_period: 744h
