@@ -27,12 +27,27 @@ services:
     logging: *default-logging
     restart: unless-stopped
 
+  # One-shot bucket provisioning; RustFS and Mimir/Loki do not auto-create buckets.
+  rustfs-init:
+    image: minio/mc
+    container_name: nethealth-rustfs-init
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      - MC_HOST_rustfs=http://nethealthadmin:nethealthsecretkey@rustfs:9000
+    command: ["mb", "--ignore-existing", "rustfs/mimir-blocks", "rustfs/mimir-ruler", "rustfs/loki-data"]
+    logging: *default-logging
+    restart: "no"
+
   mimir:
     image: grafana/mimir:3.1.2
     container_name: nethealth-mimir
     depends_on:
       rustfs:
         condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
     command:
       - -config.file=/etc/mimir/mimir.yml
     volumes:
@@ -47,6 +62,8 @@ services:
     depends_on:
       rustfs:
         condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
     command:
       - -config.file=/etc/loki/loki.yml
     volumes:
