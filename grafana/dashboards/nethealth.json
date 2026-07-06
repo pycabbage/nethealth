@@ -93,7 +93,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "mimir" },
           "expr": "ping_duration_milliseconds",
-          "legendFormat": "{{provider}} {{role}} ({{target}})",
+          "legendFormat": "{{provider}} {{family}} {{role}} ({{target}})",
           "refId": "A"
         }
       ],

@@ -116,11 +116,10 @@ services:
       alloy:
         condition: service_started
     environment:
-      # Export OTLP to Alloy; Alloy relays to Mimir/Loki. gRPC, insecure (plain
-      # HTTP over the compose network). service.name is dropped as a metric label
-      # (job) by Alloy but kept for log/telemetry hygiene.
+      # OTLP/gRPC to Alloy (insecure over the compose network); Alloy relays to
+      # Mimir/Loki. Label hygiene (service.name/job handling) is Alloy-side; see
+      # docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md.
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
-      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       - OTEL_SERVICE_NAME=nethealth-pinger
     cap_add:
       - NET_RAW

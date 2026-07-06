@@ -16,8 +16,8 @@ import (
 	probing "github.com/prometheus-community/pro-bing"
 
 	"go.opentelemetry.io/otel/attribute"
-	otlpmetricgrpc "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	otlploggrpc "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	otlpmetricgrpc "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -50,36 +50,27 @@ type sample struct {
 }
 
 const (
-	// A target is "up" if a reply arrived within this window. Being a little over
-	// 2 intervals, it tolerates the occasional single dropped packet without
-	// flapping, while still flagging a real outage within ~3s.
+	// A target is "up" if a reply arrived within this window; the >2-interval
+	// width debounces a single dropped packet. see docs/adr/0001-reachability-model.md
 	upWindow = 2500 * time.Millisecond
-	// Delay the first verdict so a reply (if reachable) has time to land, making
-	// the first emitted sample the target's true state — so the consumer records a
-	// correct baseline instead of logging a bogus down->up transition on startup.
+	// Delay the first verdict so the baseline sample reflects the true state and
+	// does not log a bogus startup transition. see docs/adr/0001-reachability-model.md
 	baselineGrace = 3 * time.Second
-	// maxPlausibleRttMs bounds a believable round-trip time. pro-bing computes RTT
-	// as receivedAt.Sub(sendTime) with no monotonic reading in the decoded payload,
-	// so a backward wall-clock step can make RTT negative and a forward step absurd.
-	// A value outside [0, maxPlausibleRttMs] is such an artifact, not a measurement.
+	// Bound a believable RTT; a value outside [0, maxPlausibleRttMs] is a
+	// wall-clock artifact, not a measurement. see docs/adr/0003-wsl2-wall-clock-tolerance.md
 	maxPlausibleRttMs = 60000 // 60s
 )
 
-// staleNaN is the IEEE-754 NaN payload Prometheus/Mimir interpret as a staleness
-// marker (github.com/prometheus/prometheus/model/value.StaleNaN). Observed as the
-// ping_duration_milliseconds gauge value while a target is down, it flows verbatim
-// through OTLP -> Alloy (otelcol.exporter.prometheus) -> remote_write and ends the
-// series at that timestamp in Mimir. A query then shows an IMMEDIATE gap for the
-// downed target instead of carrying the last RTT forward for the lookback window
-// (~5m) — this was validated end-to-end in the M1 staleness spike before the
-// migration. ping_up keeps reporting 0 (a fresh sample) so an outage is still
-// distinguishable from a dead pipeline.
+// staleNaN is the IEEE-754 NaN payload Prometheus/Mimir read as a staleness
+// marker (value.StaleNaN): observed as ping_duration_milliseconds while a target
+// is down, it ends the series so a query shows an immediate gap (ping_up still
+// reports 0). see docs/adr/0004-staleness-over-otlp-stalenan.md
 var staleNaN = math.Float64frombits(0x7ff0000000000002)
 
 // live holds each target's latest observation, keyed by target address. It is
-// written by the per-target consumers (below) and read once per second by the
-// OTel metrics callback. A target is absent until its baseline sample lands, so
-// no series is emitted for it before then.
+// written by each target's emit ticker (in pingLoop) and read once per second by
+// the OTel metrics callback. A target is absent until its baseline sample lands,
+// so no series is emitted for it before then.
 var (
 	liveMu sync.Mutex
 	live   = make(map[string]sample)
@@ -92,8 +83,6 @@ func main() {
 	endpoint := otlpEndpoint()
 	log.Printf("pinger starting: %d targets, OTLP -> %s (metrics+logs, gRPC insecure)", len(targets), endpoint)
 
-	// Wait for Alloy's OTLP port to accept connections before wiring up the
-	// exporters, so startup does not spam connection-refused errors.
 	waitForEndpoint(endpoint)
 
 	res, err := sdkresource.New(context.Background(),
@@ -132,11 +121,19 @@ func main() {
 	)
 	logger := lp.Logger("nethealth-pinger")
 
-	// One goroutine per target. Each runs a reused-socket ping loop (producer)
-	// and a consumer that updates the shared state map read by the metrics
-	// callback and emits a state-change log when reachability flips.
+	// One restart loop per target, each running a reused-socket ping loop (see
+	// docs/adr/0002-reused-icmp-socket.md). pingLoop's emit ticker updates the
+	// shared state map read by the metrics callback and logs a state-change on a
+	// reachability flip; it returns only on a socket setup error, so restart it.
 	for _, t := range targets {
-		go runTarget(t, logger)
+		go func(t target) {
+			for {
+				if err := pingLoop(t, logger); err != nil {
+					log.Printf("ping loop for %s exited: %v (restarting)", t.addr, err)
+				}
+				time.Sleep(time.Second)
+			}
+		}(t)
 	}
 
 	<-ctx.Done()
@@ -165,6 +162,18 @@ func registerMetrics(meter metric.Meter) {
 		log.Fatalf("ping_duration_milliseconds gauge: %v", err)
 	}
 
+	// Precompute each target's immutable attribute set once; otherwise the
+	// callback rebuilt it on every 1s tick.
+	attrSets := make(map[string]attribute.Set, len(targets))
+	for _, t := range targets {
+		attrSets[t.addr] = attribute.NewSet(
+			attribute.String("target", t.addr),
+			attribute.String("provider", t.provider),
+			attribute.String("family", t.family),
+			attribute.String("role", t.role),
+		)
+	}
+
 	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		liveMu.Lock()
 		defer liveMu.Unlock()
@@ -173,20 +182,15 @@ func registerMetrics(meter metric.Meter) {
 			if !ok {
 				continue // no baseline observation yet -> emit no series
 			}
-			attrs := metric.WithAttributes(
-				attribute.String("target", t.addr),
-				attribute.String("provider", t.provider),
-				attribute.String("family", t.family),
-				attribute.String("role", t.role),
-			)
+			opt := metric.WithAttributeSet(attrSets[t.addr])
 			up := int64(0)
 			dur := staleNaN // immediate-gap marker while down (see staleNaN)
 			if s.up {
 				up = 1
 				dur = s.rtt
 			}
-			o.ObserveInt64(pingUp, up, attrs)
-			o.ObserveFloat64(pingDur, dur, attrs)
+			o.ObserveInt64(pingUp, up, opt)
+			o.ObserveFloat64(pingDur, dur, opt)
 		}
 		return nil
 	}, pingUp, pingDur)
@@ -195,55 +199,13 @@ func registerMetrics(meter metric.Meter) {
 	}
 }
 
-// runTarget owns one target end to end: a restartable ping loop feeding samples,
-// a shared-state update per sample (for the metrics callback), and transition
-// detection for state-change logs.
-func runTarget(t target, logger otellog.Logger) {
-	results := make(chan sample, 8)
-
-	// Producer: a single long-lived pinger reused for the whole process lifetime.
-	// Reusing one ICMP socket per target — instead of tearing one down every
-	// second — avoids the spurious per-second timeouts that socket churn induced
-	// on the Docker Desktop / WSL2 network stack. pingLoop only returns on a
-	// socket setup error, so restart it if that ever happens.
-	go func() {
-		for {
-			if err := pingLoop(t.addr, results); err != nil {
-				log.Printf("ping loop for %s exited: %v (restarting)", t.addr, err)
-			}
-			time.Sleep(time.Second)
-		}
-	}()
-
-	// Consumer: publish each sample into the shared state map (read by the metrics
-	// callback) and emit a Loki-bound log only when reachability actually flips.
-	// prev stays nil until the first sample so the baseline observation does not
-	// emit a spurious "state change" on every process (re)start.
-	var prev *bool
-	for s := range results {
-		liveMu.Lock()
-		live[t.addr] = s
-		liveMu.Unlock()
-
-		if prev == nil {
-			up := s.up
-			prev = &up
-			continue
-		}
-		if *prev != s.up {
-			emitStateChange(logger, t, stateName(*prev), stateName(s.up))
-			*prev = s.up
-		}
-	}
-}
-
-// pingLoop runs one persistent pinger for addr, sending an echo every second on a
-// reused socket, and emits one reachability sample per second. Reachability is
-// judged purely on "how recently did a reply arrive", independent of whether each
-// send succeeded — so both an unreachable target (sends succeed, no reply) and a
-// local network drop (sends fail, no reply) are detected.
-func pingLoop(addr string, results chan<- sample) error {
-	pinger, err := probing.NewPinger(addr)
+// pingLoop runs one persistent pinger for t, sending an echo every second on a
+// reused socket. Once per second its emit ticker updates the shared state map
+// (read by the metrics callback) and logs a state-change on a reachability flip.
+// Reachability is judged on how recently a reply arrived; see
+// docs/adr/0001-reachability-model.md.
+func pingLoop(t target, logger otellog.Logger) error {
+	pinger, err := probing.NewPinger(t.addr)
 	if err != nil {
 		return err
 	}
@@ -256,13 +218,8 @@ func pingLoop(addr string, results chan<- sample) error {
 	var lastRtt float64
 	pinger.OnRecv = func(pkt *probing.Packet) {
 		rtt := float64(pkt.Rtt.Microseconds()) / 1000.0
-		// Discard replies with an implausible RTT instead of recording them. The
-		// reply is genuine (it passed pro-bing's ICMP-ID and UUID checks), but a
-		// wall-clock adjustment between send and receive can make the derived RTT
-		// negative or absurdly large (see maxPlausibleRttMs). Such a value must
-		// neither be reported as a metric nor refresh lastRecv — leaving the
-		// up-window untouched is safe because the upWindow debounce already
-		// tolerates the occasional missed reply.
+		// Discard an implausible RTT, and don't refresh lastRecv (a wall-clock
+		// artifact, not a measurement). see docs/adr/0003-wsl2-wall-clock-tolerance.md
 		if rtt < 0 || rtt > maxPlausibleRttMs {
 			return
 		}
@@ -275,20 +232,31 @@ func pingLoop(addr string, results chan<- sample) error {
 	done := make(chan struct{})
 	go func() {
 		time.Sleep(baselineGrace)
+		// prev stays nil until the baseline sample so the first observation does
+		// not emit a spurious state change on process/loop (re)start. It is owned
+		// by this closure; a lingering ticker from a prior pingLoop keeps its own.
+		var prev *bool
 		emit := func() {
 			mu.Lock()
 			up := !lastRecv.IsZero() && time.Since(lastRecv) < upWindow
 			rtt := lastRtt
 			mu.Unlock()
+
 			s := sample{up: up}
 			if up {
 				s.rtt = rtt
 			}
-			// Non-blocking: never let a slow consumer stall this loop. A dropped
-			// sample only skips one collection tick.
-			select {
-			case results <- s:
-			default:
+			liveMu.Lock()
+			live[t.addr] = s
+			liveMu.Unlock()
+
+			if prev == nil {
+				prev = &up
+				return
+			}
+			if *prev != up {
+				emitStateChange(logger, t, stateName(*prev), stateName(up))
+				*prev = up
 			}
 		}
 		emit() // baseline
@@ -353,7 +321,7 @@ func serviceName() string {
 func otlpEndpoint() string {
 	ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if ep == "" {
-		ep = "http://alloy:4317"
+		ep = "alloy:4317"
 	}
 	ep = strings.TrimPrefix(ep, "http://")
 	ep = strings.TrimPrefix(ep, "https://")

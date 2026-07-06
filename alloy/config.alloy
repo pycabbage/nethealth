@@ -6,10 +6,8 @@
 //     logs:    otelcol.receiver.otlp -> otelcol.processor.attributes (Loki label hint)
 //              -> otelcol.exporter.loki -> loki.write -> Loki
 //
-// The staleness behavior (a down target's ping_duration_milliseconds shows an
-// IMMEDIATE gap) is carried by the StaleNaN value the pinger emits while down; it
-// flows verbatim through otelcol.exporter.prometheus -> remote_write. This was
-// validated end-to-end (the "M1" spike) before the migration.
+// StaleNaN (a down target's ping_duration_milliseconds -> immediate gap) flows
+// verbatim here to remote_write; see docs/adr/0004-staleness-over-otlp-stalenan.md.
 
 otelcol.receiver.otlp "default" {
   grpc {
@@ -27,11 +25,9 @@ otelcol.receiver.otlp "default" {
 // ---- metrics ----------------------------------------------------------------
 
 otelcol.exporter.prometheus "default" {
-  // Keep metric names verbatim: ping_up / ping_duration_milliseconds (no
-  // _total/_ratio/unit suffixes).
+  // Keep metric names verbatim (no suffixes) and suppress scope/target_info
+  // label & metric pollution; see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md.
   add_metric_suffixes = false
-  // Suppress OTLP scope/target-info label & metric pollution so the series carry
-  // no otel_scope_* labels and no target_info metric is produced.
   include_scope_info   = false
   include_scope_labels = false
   include_target_info  = false
@@ -39,9 +35,8 @@ otelcol.exporter.prometheus "default" {
 }
 
 prometheus.relabel "strip" {
-  // OTLP conversion derives job (from resource service.name) and can derive
-  // instance. Drop both so each series carries EXACTLY
-  // {__name__, target, provider, family, role}.
+  // Drop job/instance (derived by OTLP conversion) so each series carries EXACTLY
+  // {__name__, target, provider, family, role}; see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md.
   rule {
     action = "labeldrop"
     regex  = "job|instance"
@@ -58,17 +53,13 @@ prometheus.remote_write "mimir" {
 // ---- logs -------------------------------------------------------------------
 
 otelcol.processor.attributes "loki_labels" {
-  // Promote these log-record attributes to Loki stream labels so state-change
-  // events are queryable as {event="state_change"} and by target/provider/...
-  // (otelcol.exporter.loki reads the loki.attribute.labels hint and drops it).
+  // Promote these attributes to Loki stream labels ({event="state_change"} etc.)
+  // and emit the body as the raw line; see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md.
   action {
     key    = "loki.attribute.labels"
     value  = "target, provider, family, role, event"
     action = "upsert"
   }
-  // Emit the log body verbatim as the Loki line (matching the pre-migration
-  // plain-text line) instead of the default JSON envelope. Hint consumed by the
-  // OTLP->Loki translator; both loki.* hints are stripped from the output.
   action {
     key    = "loki.format"
     value  = "raw"

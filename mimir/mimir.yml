@@ -66,9 +66,8 @@ memberlist:
 limits:
   ingestion_rate: 100000
   ingestion_burst_size: 200000
-  # Tolerate slightly out-of-order samples. The Docker Desktop / WSL2 VM wall
-  # clock can jump backwards, which would otherwise make concurrent pushes race
-  # ahead of an already-ingested timestamp and be rejected as out-of-order.
+  # Tolerate out-of-order samples from WSL2 wall-clock jumps; see
+  # docs/adr/0003-wsl2-wall-clock-tolerance.md.
   out_of_order_time_window: 10m
   # Retain compacted blocks for 31 days. Maps to the CLI flag
   # -compactor.blocks-retention-period (verified via `mimir -help-all`), which

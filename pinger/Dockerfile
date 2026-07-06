@@ -1,13 +1,11 @@
 # syntax=docker/dockerfile:1
-# golang:1.25-alpine: the OTel Go SDK (otel v1.44+, otlpmetricgrpc/otlploggrpc)
-# requires go >= 1.25, so 1.24 cannot build it.
+# Build constraints (go >= 1.25) and the committed offline lockfile: see
+# docs/adr/0006-build-constraints-go125-offline.md.
 FROM golang:1.25-alpine AS build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY main.go ./
-# go.sum is generated here because the host cannot reach the Go module proxy;
-# `go mod tidy` in the build container resolves the full OTel dependency graph.
-RUN go mod tidy
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /pinger .
 
 FROM alpine:3.20

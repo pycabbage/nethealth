@@ -50,8 +50,8 @@ storage_config:
 # actual deletion is performed by the compactor with retention_enabled: true.
 limits_config:
   retention_period: 744h
-  # State-change events are stamped at "now", but tolerate clock jumps in the
-  # Docker Desktop / WSL2 VM by not rejecting slightly old/unordered lines.
+  # Tolerate WSL2 wall-clock jumps (don't reject slightly old lines); see
+  # docs/adr/0003-wsl2-wall-clock-tolerance.md.
   reject_old_samples: false
 
 compactor:
