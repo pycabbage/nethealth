@@ -1,0 +1,6 @@
+{
+  // This repo wraps prose around ~90-95 chars (see docs/adr/*), not the 80-char default.
+  "config": {
+    "MD013": { "line_length": 100 }
+  }
+}

@@ -1,15 +1,19 @@
 # 0003. Tolerating WSL2 / Docker Desktop wall-clock instability
 
 ## Status
+
 Accepted (2026-07)
 
 ## Context
+
 The WSL2 / Docker Desktop VM wall clock can step backward or forward (NTP correction, host
 sleep/resume, VM time sync). This single root cause surfaces as three distinct symptoms
 across the stack.
 
 ## Decision
+
 Each layer absorbs the symptom where it appears:
+
 - **pinger** discards implausible RTTs outside `[0, 60000ms]`. pro-bing derives RTT as
   `receivedAt.Sub(sendTime)`, and the send time it decodes from the packet payload carries
   no monotonic reading — so a backward step yields a negative RTT and a forward step an
@@ -21,6 +25,7 @@ Each layer absorbs the symptom where it appears:
   rejected as too old after a jump.
 
 ## Consequences
+
 - No monotonic-clock plumbing is added to the pinger (pro-bing does not expose the send
   timestamp). The value-range guard is a deliberate, documented trade-off rather than a
   deeper fix that would move fragility into seq→send-time bookkeeping (eviction on

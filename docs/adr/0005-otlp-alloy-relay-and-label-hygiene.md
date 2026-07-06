@@ -1,14 +1,17 @@
 # 0005. OTLP → Alloy relay topology and metric label hygiene
 
 ## Status
+
 Accepted (2026-07)
 
 ## Context
+
 The pinger emits OTLP; the backends are Mimir (Prometheus remote_write) and Loki. Something
 must translate OTLP into each backend's protocol, and the OTLP→Prometheus conversion adds
 labels the dashboards do not expect.
 
 ## Decision
+
 - **Topology**: pinger → OTLP/gRPC (metrics + logs) → Grafana Alloy. Alloy relays metrics via
   `otelcol.exporter.prometheus` → `prometheus.remote_write` → Mimir, and logs via
   `otelcol.exporter.loki` → `loki.write` → Loki. Mimir, Loki, and Grafana are unchanged by the
@@ -26,6 +29,7 @@ labels the dashboards do not expect.
   hint. The pinger need not know Loki's label/cardinality model.
 
 ## Consequences
+
 - Dashboards query the same low-cardinality series as before the migration; no query changes
   were needed.
 - `service.name` is kept on the resource (useful for logs/telemetry) even though it is dropped
