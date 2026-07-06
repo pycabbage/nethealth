@@ -103,7 +103,7 @@ services:
   # Grafana Alloy: OTLP relay. Receives OTLP/gRPC from the pinger and fans out to
   # Mimir (metrics) and Loki (logs). Not published to the host.
   alloy:
-    image: grafana/alloy:v1.10.0
+    image: grafana/alloy:v1.17.1
     container_name: nethealth-alloy
     depends_on:
       mimir:
