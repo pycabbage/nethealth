@@ -1,7 +1,5 @@
-# Loki 3.7 single-binary configuration backed by RustFS (S3-compatible) object
-# storage for chunks and the shipped TSDB index (local verification).
-# auth disabled so the push/query API work without an X-Scope-OrgID header,
-# matching Mimir's multitenancy_enabled: false.
+# Loki 3.7 single-binary config backed by RustFS S3 (chunks + TSDB index; local verification).
+# auth disabled so push/query work without an X-Scope-OrgID header (matches Mimir).
 auth_enabled: false
 
 server:
@@ -12,9 +10,8 @@ server:
 common:
   instance_addr: 127.0.0.1
   path_prefix: /loki
-  # Chunks and the shipped TSDB index live in the RustFS S3-compatible bucket.
-  # s3forcepathstyle: true is required for MinIO-style servers (bucket in the
-  # path, not the host); insecure: true = plain HTTP (no TLS).
+  # Chunks and TSDB index live in the RustFS S3 bucket. s3forcepathstyle: true is
+  # required for MinIO-style servers (bucket in path); insecure = plain HTTP.
   storage:
     s3:
       endpoint: rustfs:9000
@@ -40,25 +37,21 @@ schema_config:
         period: 24h
 
 storage_config:
-  # Node-local scratch only: the shipper's working copy of the index and its
-  # read-through cache. The authoritative index and chunks are in S3 (above).
+  # Node-local scratch: the shipper's index working copy and cache (authoritative copy in S3).
   tsdb_shipper:
     active_index_directory: /loki/tsdb-index
     cache_location: /loki/tsdb-cache
 
-# Retain log streams for 31 days. retention_period lives under limits_config;
-# actual deletion is performed by the compactor with retention_enabled: true.
+# Retain log streams 31 days; deletion is performed by the compactor (retention_enabled: true).
 limits_config:
   retention_period: 744h
-  # Tolerate WSL2 wall-clock jumps (don't reject slightly old lines); see
-  # docs/adr/0003-wsl2-wall-clock-tolerance.md.
+  # Tolerate WSL2 wall-clock jumps (don't reject slightly old lines). see docs/adr/0003-wsl2-wall-clock-tolerance.md
   reject_old_samples: false
 
 compactor:
   working_directory: /loki/compactor
   retention_enabled: true
-  # Store delete requests in the object store too, so nothing depends on the
-  # local filesystem backend anymore.
+  # Store delete requests in the object store too, not the local filesystem.
   delete_request_store: s3
   compaction_interval: 10m
 

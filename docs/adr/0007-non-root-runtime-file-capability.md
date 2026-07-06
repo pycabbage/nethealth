@@ -1,29 +1,39 @@
-# 0007. Non-root runtime with a file-capability raw socket (alpine, not scratch)
+# 0007. Minimal scratch runtime, run as root with only NET_RAW (not non-root on alpine)
 
 ## Status
-Accepted (2026-07)
+Accepted (2026-07). Supersedes the initial non-root-on-alpine choice.
 
 ## Context
-The pinger opens raw ICMP sockets, which require the NET_RAW capability. The build produces
-a static (`CGO_ENABLED=0`) binary that would run on `scratch`. The open question is which
-runtime base image to use.
+The pinger opens raw ICMP sockets (needs NET_RAW) and builds to a single static
+(`CGO_ENABLED=0`) binary. The runtime base image and the user/capability model are the
+decision here.
+
+A raw socket is usable only if NET_RAW is in the process's *effective* set. Two ways to get
+there:
+- run as **root**: root gets NET_RAW effective directly from the container's granted caps;
+- run as a **non-root** uid: needs a file capability on the binary (`setcap cap_net_raw+ep`)
+  or ambient caps. `setcap` needs libcap and cannot run in a scratch final stage (and the
+  `security.capability` xattr does not survive `COPY --from`), so non-root forces a distro
+  base (alpine) carrying a shell, package manager, and libcap in the image.
 
 ## Decision
-Use `alpine` for the runtime stage and run the pinger as a non-root user:
-- `apk add libcap` provides `setcap`; `setcap cap_net_raw+ep` on the binary makes NET_RAW
-  *effective* for a non-root process.
-- `adduser` creates the unprivileged `pinger` user (uid 10001); `USER pinger` drops root.
-- The container is granted NET_RAW via the compose `cap_add`, which puts the capability in
-  the permitted set; the file capability is what lets the non-root process actually use it.
+Use `FROM scratch` and run as **root**, and confine the container rather than the process:
+- compose `cap_drop: [ALL]` then `cap_add: [NET_RAW]` — the only capability the pinger needs;
+- `security_opt: ["no-new-privileges:true"]`;
+- `read_only: true` (the pinger writes nothing to disk).
 
-## Consequences / why not scratch
-- `scratch` (and distroless) have no shell, package manager, `setcap`, or `adduser`, so the
-  non-root + file-capability setup cannot be performed in the final stage. Setting the cap in
-  an earlier stage does not survive `COPY --from` (BuildKit does not preserve the
-  `security.capability` xattr).
-- To use `scratch` you would instead run the process as **root** and rely solely on the
-  container's NET_RAW, dropping the non-root hardening. The chosen trade-off keeps non-root
-  at the cost of a small (~8 MB) alpine base plus libcap.
-- The static binary needs nothing from alpine at runtime — DNS for `alloy:4317` resolves via
-  Go's pure resolver over Docker's injected `/etc/resolv.conf`. Alpine exists only for the
-  non-root + capability setup.
+## Consequences
+- Smallest attack surface: the image is the static binary and nothing else — no shell, no
+  busybox, no package manager, no libc — so a compromised process has no userland to pivot
+  with, and the image carries no distro CVEs. This is a *smaller* attack surface than
+  non-root-on-alpine, where obtaining a non-root uid meant importing a whole alpine userland
+  (the earlier decision had this trade backwards).
+- "root" here is container-root confined to a single capability (NET_RAW), with
+  no-new-privileges and a read-only rootfs — a much smaller target than the previous default
+  Docker cap set + NET_RAW.
+- The static binary needs nothing else at runtime: it reaches `alloy:4317` over plaintext
+  gRPC (no TLS → no CA certs), and DNS resolves via Go's pure resolver over Docker's injected
+  `/etc/resolv.conf`.
+- Trade-off accepted: the process runs as uid 0 inside the container. Given the confinement
+  above and a single static binary, that is preferred over adding a distro userland solely to
+  obtain a non-root uid.

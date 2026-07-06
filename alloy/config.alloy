@@ -1,13 +1,5 @@
-// Grafana Alloy relay for nethealth.
-//
-//   pinger --OTLP/gRPC(metrics+logs)--> Alloy
-//     metrics: otelcol.receiver.otlp -> otelcol.exporter.prometheus
-//              -> prometheus.relabel (drop job/instance) -> prometheus.remote_write -> Mimir
-//     logs:    otelcol.receiver.otlp -> otelcol.processor.attributes (Loki label hint)
-//              -> otelcol.exporter.loki -> loki.write -> Loki
-//
-// StaleNaN (a down target's ping_duration_milliseconds -> immediate gap) flows
-// verbatim here to remote_write; see docs/adr/0004-staleness-over-otlp-stalenan.md.
+// Alloy relay: pinger OTLP -> Mimir metrics + Loki logs.
+// Topology/label hygiene: see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md; StaleNaN: see docs/adr/0004-staleness-over-otlp-stalenan.md
 
 otelcol.receiver.otlp "default" {
   grpc {
@@ -25,8 +17,7 @@ otelcol.receiver.otlp "default" {
 // ---- metrics ----------------------------------------------------------------
 
 otelcol.exporter.prometheus "default" {
-  // Keep metric names verbatim (no suffixes) and suppress scope/target_info
-  // label & metric pollution; see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md.
+  // Keep metric names verbatim and suppress scope/target_info pollution. see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md
   add_metric_suffixes = false
   include_scope_info   = false
   include_scope_labels = false
@@ -35,8 +26,7 @@ otelcol.exporter.prometheus "default" {
 }
 
 prometheus.relabel "strip" {
-  // Drop job/instance (derived by OTLP conversion) so each series carries EXACTLY
-  // {__name__, target, provider, family, role}; see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md.
+  // Drop job/instance so each series carries exactly {__name__, target, provider, family, role}. see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md
   rule {
     action = "labeldrop"
     regex  = "job|instance"
@@ -53,8 +43,7 @@ prometheus.remote_write "mimir" {
 // ---- logs -------------------------------------------------------------------
 
 otelcol.processor.attributes "loki_labels" {
-  // Promote these attributes to Loki stream labels ({event="state_change"} etc.)
-  // and emit the body as the raw line; see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md.
+  // Promote attributes to Loki stream labels and emit the body raw. see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md
   action {
     key    = "loki.attribute.labels"
     value  = "target, provider, family, role, event"

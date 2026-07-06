@@ -1,6 +1,4 @@
-# Docker daemon-side container log rotation (stdout/stderr of each container).
-# This is independent of the TSDB / Loki data-retention settings, which govern
-# the monitoring data itself, not Docker's own container logs.
+# Docker-side container log rotation (stdout/stderr), independent of TSDB/Loki data retention.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -8,9 +6,7 @@ x-logging: &default-logging
     max-file: "5"
 
 services:
-  # S3-compatible object storage. Backs both Mimir (blocks/ruler) and Loki
-  # (chunks/index). Not published to the host; reached only over the compose
-  # network at rustfs:9000. Console (9001) is left unexposed as well.
+  # S3-compatible object storage backing Mimir and Loki; not published to the host.
   rustfs:
     image: rustfs/rustfs:latest
     container_name: nethealth-rustfs
@@ -87,10 +83,8 @@ services:
     logging: *default-logging
     restart: unless-stopped
 
-  # Grafana Alloy: the OTLP relay. Receives OTLP/gRPC(+HTTP) from the pinger and
-  # fans out — metrics to Mimir (remote_write) and logs to Loki. Config in
-  # ./alloy/config.alloy. Not published to the host (OTLP is reached only over
-  # the compose network at alloy:4317).
+  # Grafana Alloy: OTLP relay. Receives OTLP/gRPC from the pinger and fans out to
+  # Mimir (metrics) and Loki (logs). Not published to the host.
   alloy:
     image: grafana/alloy:v1.10.0
     container_name: nethealth-alloy
@@ -116,13 +110,18 @@ services:
       alloy:
         condition: service_started
     environment:
-      # OTLP/gRPC to Alloy (insecure over the compose network); Alloy relays to
-      # Mimir/Loki. Label hygiene (service.name/job handling) is Alloy-side; see
-      # docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md.
+      # OTLP/gRPC to Alloy, which relays to Mimir/Loki. see docs/adr/0005-otlp-alloy-relay-and-label-hygiene.md
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
       - OTEL_SERVICE_NAME=nethealth-pinger
+    # root in the container, but confined: only NET_RAW, no privilege escalation,
+    # read-only rootfs. see docs/adr/0007-non-root-runtime-file-capability.md
+    cap_drop:
+      - ALL
     cap_add:
       - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
     logging: *default-logging
     restart: unless-stopped
 

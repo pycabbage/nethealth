@@ -1,5 +1,5 @@
-# Mimir 3.1.2 monolithic / single-process configuration (local verification)
-# multitenancy disabled so push/query work without X-Scope-OrgID header.
+# Mimir 3.1.2 single-process config (local verification).
+# multitenancy disabled so push/query work without an X-Scope-OrgID header.
 multitenancy_enabled: false
 
 server:
@@ -7,10 +7,8 @@ server:
   grpc_listen_port: 9095
   log_level: info
 
-# Shared object-storage connection used by blocks/ruler/alertmanager. Points at
-# the RustFS S3-compatible service. `insecure: true` = plain HTTP (no TLS).
-# Per-component bucket names are set on each *_storage block below, because
-# Mimir requires a distinct bucket per component.
+# Shared object-storage connection (RustFS S3; insecure = plain HTTP). Per-component
+# bucket names are set on each *_storage block, as Mimir requires a distinct bucket each.
 common:
   storage:
     backend: s3
@@ -24,8 +22,7 @@ common:
 blocks_storage:
   s3:
     bucket_name: mimir-blocks
-  # These stay on the local volume: the ingester's TSDB head/WAL and the
-  # store-gateway's block-sync cache are node-local, not object storage.
+  # Node-local scratch (TSDB head/WAL, block-sync cache), not object storage.
   bucket_store:
     sync_dir: /data/tsdb-sync
   tsdb:
@@ -66,10 +63,8 @@ memberlist:
 limits:
   ingestion_rate: 100000
   ingestion_burst_size: 200000
-  # Tolerate out-of-order samples from WSL2 wall-clock jumps; see
-  # docs/adr/0003-wsl2-wall-clock-tolerance.md.
+  # Tolerate out-of-order samples from WSL2 wall-clock jumps. see docs/adr/0003-wsl2-wall-clock-tolerance.md
   out_of_order_time_window: 10m
-  # Retain compacted blocks for 31 days. Maps to the CLI flag
-  # -compactor.blocks-retention-period (verified via `mimir -help-all`), which
-  # in YAML lives under the per-tenant `limits` block.
+  # Retain compacted blocks 31 days. Maps to -compactor.blocks-retention-period,
+  # which in YAML must live under the per-tenant `limits` block.
   compactor_blocks_retention_period: 744h
