@@ -62,6 +62,8 @@ before changing behavior it governs, since several non-obvious constraints span 
   attack surface.
 - 0008 RustFS buckets are provisioned by the `rustfs-init` one-shot service, not created
   manually — required because neither RustFS nor Mimir/Loki auto-create buckets.
+- 0009 pinger build stage is pinned to `$BUILDPLATFORM` and cross-compiles via `GOOS`/`GOARCH`
+  (CGO off), so `go test`/`go build` run on the native arch instead of per-target under QEMU.
 
 ## Known environment constraints
 
