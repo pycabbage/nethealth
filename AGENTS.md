@@ -22,8 +22,10 @@ Grafana: <http://localhost:3456> (`admin` / `admin`).
 
 The pinger has no local build/test tooling outside its Dockerfile — `go.mod`/`go.sum` are a
 committed offline lockfile (see ADR 0006), so build it via the Docker image rather than a bare
-`go build` unless module downloads are known to work in your environment. There are no automated
-tests in this repo.
+`go build` unless module downloads are known to work in your environment. Table-driven tests for
+the pure functions (reachability debounce, OTLP endpoint parsing) run via `go test ./...` in the
+Docker build stage, so a failing test fails the build; no host Go toolchain is needed (same
+offline-deps model as ADR 0006).
 
 ## Architecture
 
@@ -31,7 +33,7 @@ tests in this repo.
 provisioning) → `mimir` / `loki` → `grafana` / `alloy` → `pinger`. Only `grafana` is published to
 the host (3456→3000); everything else is internal to the compose network.
 
-**Data flow**: `pinger` (Go, `pinger/main.go`) runs one persistent goroutine per target with a
+**Data flow**: `pinger` (Go, `pinger/*.go`) runs one persistent goroutine per target with a
 reused raw ICMP socket, classifies each target up/down once per second, and pushes OTLP
 metrics+logs over gRPC to `alloy`. Alloy (`alloy/config.alloy`) fans out: metrics via
 `otelcol.exporter.prometheus` → `prometheus.remote_write` → Mimir; logs via
@@ -52,7 +54,7 @@ before changing behavior it governs, since several non-obvious constraints span 
   omitting the observation, so Mimir shows an immediate gap instead of a 5-minute carry-forward.
 - 0005 OTLP→Prometheus label hygiene (`job`/`instance`/scope labels) is stripped in Alloy, where
   those labels are born — the pinger stays backend-agnostic.
-- 0006 Go ≥1.25, committed offline `go.mod`/`go.sum` lockfile; build container resolves deps,
+- 0006 Go 1.26.4, committed offline `go.mod`/`go.sum` lockfile; build container resolves deps,
   not the host.
 - 0007 pinger image is `FROM scratch`, runs as root confined to `NET_RAW` only
   (`cap_drop: ALL` + `cap_add: NET_RAW`, `no-new-privileges`, `read_only`) — deliberately not
@@ -77,3 +79,15 @@ After editing any Markdown file (ADRs, this file, README), run
 `bunx markdownlint-cli2 *.md docs/adr/*.md --fix` and resolve anything it reports.
 `.markdownlint-cli2.jsonc` sets the line-length limit to 100 to match this repo's existing
 wrapping convention (~90-95 chars), not the tool's 80-char default.
+
+## Go lint hygiene
+
+After editing any Go file under `pinger/`, run golangci-lint from that directory via Docker
+(pinned to v2.12.2, matching the other pinned images) and resolve anything it reports:
+
+```sh
+docker run --rm -v "$(pwd)":/app -w /app golangci/golangci-lint:v2.12.2 golangci-lint run
+```
+
+Run it from `pinger/` (where `go.mod` lives); no host Go toolchain or golangci-lint install is
+needed. On PowerShell, replace `$(pwd)` with `${PWD}`.

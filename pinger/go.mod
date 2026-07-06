@@ -1,7 +1,7 @@
 module nethealth/pinger
 
-// go >= 1.25 and the committed offline lockfile: see docs/adr/0006-build-constraints-go125-offline.md
-go 1.25.0
+// go 1.26.4 and the committed offline lockfile: see docs/adr/0006-build-constraints-go125-offline.md
+go 1.26.4
 
 require (
 	github.com/prometheus-community/pro-bing v0.7.0
