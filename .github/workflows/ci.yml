@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DOCKER_REGISTRY: ghcr.io
-      DOCKER_IMAGE_NAME: ${{ github.repository }}
+      DOCKER_IMAGE_NAME: ${{ github.repository }}/pinger
     permissions:
       id-token: write
       packages: write

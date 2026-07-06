@@ -120,6 +120,7 @@ services:
     restart: unless-stopped
 
   pinger:
+    image: ghcr.io/pycabbage/nethealth/pinger
     build:
       context: ./pinger
     container_name: nethealth-pinger
