@@ -41,7 +41,7 @@ services:
     restart: "no"
 
   mimir:
-    image: grafana/mimir:3.1.2
+    image: grafana/mimir:3.1.4
     container_name: nethealth-mimir
     depends_on:
       rustfs:
