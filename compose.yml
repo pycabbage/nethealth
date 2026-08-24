@@ -73,7 +73,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:13.1
+    image: grafana/grafana:13.2
     container_name: nethealth-grafana
     depends_on:
       mimir:
